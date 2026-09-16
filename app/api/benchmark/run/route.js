@@ -34,7 +34,9 @@ export async function POST(request) {
     modelIds = [],
     prompts = DEFAULT_PROMPT_SUITE.prompts,
     cursor = null,
-    timeBudgetMs = 38_000,
+    timeBudgetMs = 45_000,
+    concurrency = 4,
+    maxTokens = 128,
   } = body;
 
   if (!Array.isArray(modelIds) || modelIds.length === 0) {
@@ -50,13 +52,15 @@ export async function POST(request) {
       prompts,
       cursor,
       timeBudgetMs,
+      concurrency,
+      maxTokens,
     });
 
     return NextResponse.json({
       runId,
-      results: batchResult.results,
-      cursor: batchResult.cursor,
-      status: batchResult.status,
+      results: batchResult.results || [],
+      cursor: batchResult.cursor || null,
+      status: batchResult.status || "complete",
     });
   } catch (err) {
     if (err?.isAuthError) {

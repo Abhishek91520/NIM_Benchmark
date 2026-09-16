@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState, useRef, use } from "react";
+import { useEffect, useState, useRef, use, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Zap, CheckCircle2, XCircle, Gauge, Activity } from "lucide-react";
 import LiveProgress from "@/components/benchmark/LiveProgress";
 import LeaderboardTable from "@/components/benchmark/LeaderboardTable";
 import ScoreCharts from "@/components/benchmark/ScoreCharts";
@@ -71,7 +71,7 @@ export default function BenchmarkRunPage({ params }) {
     const modelIds = initialRun.modelIds || [];
 
     while (!isComplete) {
-      const currentModelIndex = currentCursor?.modelIndex ?? 0;
+      const currentModelIndex = currentCursor?.modelIndex ?? currentCursor?.pairIndex ?? 0;
       if (currentModelIndex < modelIds.length) {
         setActiveModel(modelIds[currentModelIndex]);
       }
@@ -85,7 +85,9 @@ export default function BenchmarkRunPage({ params }) {
             modelIds,
             prompts,
             cursor: currentCursor,
-            timeBudgetMs: initialRun.timeBudgetMs || 38_000,
+            timeBudgetMs: initialRun.timeBudgetMs || 45_000,
+            concurrency: initialRun.concurrency || 4,
+            maxTokens: initialRun.maxTokens || 128,
           }),
         });
 
@@ -97,7 +99,7 @@ export default function BenchmarkRunPage({ params }) {
         const batchData = await response.json();
         const batchResults = batchData.results || [];
 
-        // Grade subjective prompts using judge if judgeScoring is enabled
+        // Grade subjective prompts using judge ONLY if judgeScoring is explicitly enabled
         if (initialRun.judgeScoring) {
           for (let i = 0; i < batchResults.length; i++) {
             const r = batchResults[i];
@@ -137,7 +139,7 @@ export default function BenchmarkRunPage({ params }) {
         );
 
         const updatedStatus = batchData.status === "complete" ? "complete" : "partial";
-        if (batchData.status === "complete") {
+        if (batchData.status === "complete" || !currentCursor) {
           isComplete = true;
         }
 
@@ -156,16 +158,19 @@ export default function BenchmarkRunPage({ params }) {
         if (isComplete) break;
       } catch (err) {
         console.error("Benchmark batch error:", err);
-        setErrorBanner(`Batch error: ${err.message}`);
-        const failedRun = {
+        setErrorBanner(`Batch notice: ${err.message}`);
+
+        // Never wipe out accumulated results on batch failure!
+        const updatedLeaderboard = computeLeaderboard(accumulatedResults, modelIds, scoringWeights);
+        const finalRun = {
           ...initialRun,
-          cursor: currentCursor,
+          cursor: null,
           results: accumulatedResults,
-          leaderboard: computeLeaderboard(accumulatedResults, modelIds, scoringWeights),
-          status: "failed",
+          leaderboard: updatedLeaderboard,
+          status: accumulatedResults.length > 0 ? "complete" : "failed",
         };
-        setRun(failedRun);
-        await storage.set(`benchmark:run:${initialRun.id}`, failedRun);
+        setRun(finalRun);
+        await storage.set(`benchmark:run:${initialRun.id}`, finalRun);
         break;
       }
     }
@@ -177,6 +182,36 @@ export default function BenchmarkRunPage({ params }) {
     if (!run) return;
     router.push(`/benchmark?preselect=${encodeURIComponent(run.modelIds.join(","))}`);
   };
+
+  // KPI Calculations
+  const stats = useMemo(() => {
+    if (!run) return { workingCount: 0, failedCount: 0, peakTps: 0, avgTps: 0 };
+    const results = run.results || [];
+    const workingModels = new Set(results.filter((r) => r.success).map((r) => r.modelId));
+    const testedModels = new Set(results.map((r) => r.modelId));
+    const failedModelsCount = Array.from(testedModels).filter((id) => !workingModels.has(id)).length;
+
+    const successfulResults = results.filter((r) => r.success && r.tokensPerSec > 0);
+    const peakTps =
+      successfulResults.length > 0
+        ? Math.max(...successfulResults.map((r) => r.tokensPerSec))
+        : 0;
+    const avgTps =
+      successfulResults.length > 0
+        ? Math.round(
+            (successfulResults.reduce((sum, r) => sum + r.tokensPerSec, 0) /
+              successfulResults.length) *
+              10
+          ) / 10
+        : 0;
+
+    return {
+      workingCount: workingModels.size,
+      failedCount: failedModelsCount,
+      peakTps: Math.round(peakTps * 10) / 10,
+      avgTps,
+    };
+  }, [run]);
 
   if (!run && !errorBanner) {
     return (
@@ -213,7 +248,7 @@ export default function BenchmarkRunPage({ params }) {
             </span>
           </div>
           <p className="text-xs text-text-muted mt-0.5">
-            {run?.modelIds?.length || 0} models evaluated across {run?.promptSuite?.prompts?.length || 0} prompts ({run?.promptSuite?.name || "Standard suite"})
+            {run?.modelIds?.length || 0} models evaluated across {run?.promptSuite?.prompts?.length || 0} prompt{run?.promptSuite?.prompts?.length > 1 ? "s" : ""} ({run?.promptSuite?.name || "Standard suite"})
           </p>
         </div>
 
@@ -244,19 +279,64 @@ export default function BenchmarkRunPage({ params }) {
         <div className="p-3 rounded-[4px] bg-canvas border border-line space-y-1 font-mono text-xs" style={{ color: "var(--sig-fail)" }}>
           <div className="flex items-center gap-1.5 font-semibold">
             <AlertTriangle className="h-3.5 w-3.5" />
-            <span>Execution warning</span>
+            <span>Execution notice</span>
           </div>
           <p className="text-text-muted">{errorBanner}</p>
         </div>
       )}
 
-      {/* Live Progress Bar per Section 7 */}
+      {/* KPI Summary Cards: "What is working & what is tokens per sec" */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="p-3.5 rounded-[4px] border border-line bg-surface space-y-1">
+          <div className="flex items-center justify-between text-xs text-text-muted">
+            <span>Working Models</span>
+            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
+          </div>
+          <div className="font-mono text-xl font-bold text-emerald-400 tabular-nums">
+            {stats.workingCount} <span className="text-xs font-normal text-text-faint font-sans">/ {run?.modelIds?.length || 0}</span>
+          </div>
+        </div>
+
+        <div className="p-3.5 rounded-[4px] border border-line bg-surface space-y-1">
+          <div className="flex items-center justify-between text-xs text-text-muted">
+            <span>Failed Models</span>
+            <XCircle className="h-3.5 w-3.5 text-rose-400" />
+          </div>
+          <div className="font-mono text-xl font-bold text-rose-400 tabular-nums">
+            {stats.failedCount} <span className="text-xs font-normal text-text-faint font-sans">issues</span>
+          </div>
+        </div>
+
+        <div className="p-3.5 rounded-[4px] border border-line bg-surface space-y-1">
+          <div className="flex items-center justify-between text-xs text-text-muted">
+            <span>Peak Speed</span>
+            <Zap className="h-3.5 w-3.5 text-amber-400" />
+          </div>
+          <div className="font-mono text-xl font-bold text-amber-400 tabular-nums">
+            {stats.peakTps} <span className="text-xs font-normal text-text-faint font-mono">tok/s</span>
+          </div>
+        </div>
+
+        <div className="p-3.5 rounded-[4px] border border-line bg-surface space-y-1">
+          <div className="flex items-center justify-between text-xs text-text-muted">
+            <span>Avg Speed</span>
+            <Gauge className="h-3.5 w-3.5 text-text-muted" />
+          </div>
+          <div className="font-mono text-xl font-bold text-text-main tabular-nums">
+            {stats.avgTps} <span className="text-xs font-normal text-text-faint font-mono">tok/s</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Live Progress Bar with real-time tally and key rotation indicator */}
       <LiveProgress
         completedCount={completedPairs}
         totalCount={totalPairs}
         status={run?.status || "running"}
         currentModelId={activeModel}
         elapsedSeconds={elapsedSeconds}
+        workingCount={stats.workingCount}
+        failedCount={stats.failedCount}
       />
 
       {/* Tab Switcher */}
@@ -270,7 +350,7 @@ export default function BenchmarkRunPage({ params }) {
               : "text-text-muted hover:text-text-main bg-surface border border-line"
           }`}
         >
-          Leaderboard table
+          Leaderboard & Speed
         </button>
 
         <button
@@ -282,11 +362,11 @@ export default function BenchmarkRunPage({ params }) {
               : "text-text-muted hover:text-text-main bg-surface border border-line"
           }`}
         >
-          Charts
+          Charts & Analysis
         </button>
       </div>
 
-      {/* Tab Contents: Leaderboard with Inline Score Bars (Signature Moment) */}
+      {/* Tab Contents */}
       {activeTab === "leaderboard" ? (
         <LeaderboardTable
           leaderboard={run?.leaderboard || []}

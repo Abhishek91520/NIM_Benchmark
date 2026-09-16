@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
-import { Search, ChevronDown, ChevronUp } from "lucide-react";
+import { useState, useMemo, useEffect, useRef } from "react";
+import { Search, ChevronDown, ChevronUp, Zap, Sparkles, CheckCircle2 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { DEFAULT_PROMPT_SUITE } from "@/lib/benchmark/default-suite";
 import { storage } from "@/lib/storage";
 
@@ -10,14 +11,9 @@ export default function RunConfigForm({
   preselectedModelIds = [],
   onLaunch,
 }) {
-  const [selectedModels, setSelectedModels] = useState(
-    preselectedModelIds.length > 0
-      ? preselectedModelIds
-      : availableModels
-          .filter((m) => (m.category || "chat") === "chat")
-          .slice(0, 4)
-          .map((m) => m.id)
-  );
+  const [isMounted, setIsMounted] = useState(false);
+  const [selectedModels, setSelectedModels] = useState([]);
+  const hasInitializedRef = useRef(false);
 
   const [search, setSearch] = useState("");
   const [suiteId, setSuiteId] = useState("default");
@@ -25,13 +21,30 @@ export default function RunConfigForm({
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Advanced settings
-  const [timeBudgetSeconds, setTimeBudgetSeconds] = useState(38);
-  const [judgeScoringEnabled, setJudgeScoringEnabled] = useState(true);
+  const [timeBudgetSeconds, setTimeBudgetSeconds] = useState(45);
+  const [judgeScoringEnabled, setJudgeScoringEnabled] = useState(false); // Default to false for blazing fast runs
 
-  // Selected prompt IDs (allows user to select between 1 and 8 prompts)
+  // Query key pool status to display active rotating keys
+  const { data: healthData } = useQuery({
+    queryKey: ["key-pool-status"],
+    queryFn: async () => {
+      const res = await fetch("/api/health-check");
+      if (!res.ok) return null;
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+
+  const totalKeysConfigured = healthData?.keyPool?.totalKeys || 3;
+
+  // Selected prompt IDs (default to 1 prompt for fast status & TPS check)
   const [selectedPromptIds, setSelectedPromptIds] = useState(() =>
-    DEFAULT_PROMPT_SUITE.prompts.slice(0, 8).map((p) => p.id)
+    [DEFAULT_PROMPT_SUITE.prompts[0].id]
   );
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   useEffect(() => {
     async function loadSuites() {
@@ -44,7 +57,7 @@ export default function RunConfigForm({
   }, []);
 
   useEffect(() => {
-    if (selectedModels.length === 0 && availableModels.length > 0) {
+    if (!hasInitializedRef.current && availableModels.length > 0) {
       if (preselectedModelIds.length > 0) {
         setSelectedModels(preselectedModelIds);
       } else {
@@ -54,6 +67,7 @@ export default function RunConfigForm({
           .map((m) => m.id);
         setSelectedModels(defaults);
       }
+      hasInitializedRef.current = true;
     }
   }, [availableModels, preselectedModelIds]);
 
@@ -66,7 +80,7 @@ export default function RunConfigForm({
   // Sync selected prompt IDs when active suite changes
   useEffect(() => {
     if (activeSuite?.prompts) {
-      setSelectedPromptIds(activeSuite.prompts.slice(0, 8).map((p) => p.id));
+      setSelectedPromptIds([activeSuite.prompts[0].id]);
     }
   }, [suiteId]);
 
@@ -123,6 +137,16 @@ export default function RunConfigForm({
     }
   };
 
+  const handleSpeedStatusPreset = () => {
+    setSelectedPromptIds([activeSuite.prompts[0]?.id || "prompt-1-reasoning"]);
+    setJudgeScoringEnabled(false);
+  };
+
+  const handleFullSuitePreset = () => {
+    setSelectedPromptIds((activeSuite.prompts || []).slice(0, 8).map((p) => p.id));
+    setJudgeScoringEnabled(true);
+  };
+
   const totalPairs = selectedModels.length * selectedPrompts.length;
 
   const handleSubmit = (e) => {
@@ -137,17 +161,56 @@ export default function RunConfigForm({
       },
       judgeScoring: judgeScoringEnabled,
       timeBudgetMs: timeBudgetSeconds * 1000,
+      concurrency: 4,
+      maxTokens: judgeScoringEnabled ? 512 : 128,
     });
   };
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      {/* Preset Selector Banner & Key Rotation Status */}
+      <div className="rounded-[4px] border border-line bg-surface p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-semibold text-text flex items-center gap-1.5 mr-1">
+            <Zap className="h-4 w-4 text-amber-400" />
+            <span>Preset:</span>
+          </span>
+          <button
+            type="button"
+            onClick={handleSpeedStatusPreset}
+            className={`h-7 px-3 rounded-[4px] text-xs font-medium transition ${
+              selectedPrompts.length === 1 && !judgeScoringEnabled
+                ? "bg-text-main text-canvas shadow-sm"
+                : "bg-surface-raised border border-line text-text-muted hover:text-text-main"
+            }`}
+          >
+            ⚡ Speed & Status Check (1 prompt, ~5s)
+          </button>
+          <button
+            type="button"
+            onClick={handleFullSuitePreset}
+            className={`h-7 px-3 rounded-[4px] text-xs font-medium transition ${
+              selectedPrompts.length > 1 && judgeScoringEnabled
+                ? "bg-text-main text-canvas shadow-sm"
+                : "bg-surface-raised border border-line text-text-muted hover:text-text-main"
+            }`}
+          >
+            Full Benchmark (8 prompts)
+          </button>
+        </div>
+
+        <div className="flex items-center gap-2 font-mono text-xs text-amber-400 bg-amber-950/30 px-2.5 py-1 rounded-[4px] border border-amber-800/40 shrink-0">
+          <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+          <span>{totalKeysConfigured} API Key{totalKeysConfigured > 1 ? "s" : ""} in Rotation</span>
+        </div>
+      </div>
+
       {/* Step 1: Select Models Panel */}
       <div className="rounded-[4px] border border-line bg-surface p-4 space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-line pb-2.5">
           <div>
-            <h3 className="text-xs font-semibold text-text font-sans">
-              Candidate models ({selectedModels.length} selected)
+            <h3 className="text-xs font-semibold text-text font-sans" suppressHydrationWarning>
+              Candidate models ({isMounted ? selectedModels.length : 0} selected)
             </h3>
             <p className="text-[11px] text-text-muted mt-0.5 max-w-[68ch]">
               Select models to benchmark across test prompts.
@@ -186,7 +249,9 @@ export default function RunConfigForm({
 
         {/* Model rows */}
         <div className="max-h-60 overflow-y-auto space-y-0.5 border border-line rounded-[4px] p-1 bg-canvas">
-          {filteredModels.length === 0 ? (
+          {!isMounted ? (
+            <div className="p-4 text-center text-xs text-text-faint">Loading models…</div>
+          ) : filteredModels.length === 0 ? (
             <div className="p-4 text-center text-xs text-text-faint">No models available</div>
           ) : (
             filteredModels.map((model) => {
@@ -398,18 +463,19 @@ export default function RunConfigForm({
       {/* Action Bar with Outcome-Naming Button */}
       <div className="p-3.5 rounded-[4px] border border-line bg-surface flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="text-xs font-mono text-text-muted">
-          <span>
-            {selectedModels.length} models × {selectedPrompts.length} prompt{selectedPrompts.length > 1 ? "s" : ""} ={" "}
-            <span className="text-text font-medium">{totalPairs} pairs</span>
+          <span suppressHydrationWarning>
+            {isMounted ? selectedModels.length : 0} models × {selectedPrompts.length} prompt{selectedPrompts.length > 1 ? "s" : ""} ={" "}
+            <span className="text-text font-medium">{isMounted ? totalPairs : 0} pairs</span>
           </span>
         </div>
 
         <button
           type="submit"
-          disabled={selectedModels.length === 0 || selectedPrompts.length === 0}
+          disabled={!isMounted || selectedModels.length === 0 || selectedPrompts.length === 0}
           className="h-8 px-5 rounded-[6px] bg-text text-canvas font-medium text-xs hover:bg-white transition-opacity disabled:opacity-50"
+          suppressHydrationWarning
         >
-          Run benchmark ({totalPairs} pairs)
+          Run benchmark ({isMounted ? totalPairs : 0} pairs)
         </button>
       </div>
     </form>

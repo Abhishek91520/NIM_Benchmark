@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
-import { chatCompletion, isApiKeyConfigured } from "@/lib/nim-client";
+import { chatCompletion, isApiKeyConfigured, getKeyPoolStatus } from "@/lib/nim-client";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+
+export async function GET() {
+  return NextResponse.json({
+    status: isApiKeyConfigured() ? "ok" : "unauthorized",
+    configured: isApiKeyConfigured(),
+    keyPool: getKeyPoolStatus(),
+  });
+}
 
 const CONCURRENCY_LIMIT = 8;
 const PROBE_TIMEOUT_MS = 10_000;

@@ -36,8 +36,10 @@ function BenchmarkConfigContent() {
       cursor: null,
       results: [],
       leaderboard: [],
-      judgeScoring: config.judgeScoring,
-      timeBudgetMs: config.timeBudgetMs,
+      judgeScoring: config.judgeScoring ?? false,
+      timeBudgetMs: config.timeBudgetMs || 45_000,
+      concurrency: config.concurrency || 4,
+      maxTokens: config.maxTokens || 128,
     };
 
     await storage.set(`benchmark:run:${runId}`, initialRun);

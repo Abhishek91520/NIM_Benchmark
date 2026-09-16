@@ -41,6 +41,16 @@ export default function SettingsPage() {
     },
   });
 
+  const { data: healthData } = useQuery({
+    queryKey: ["health-keys"],
+    queryFn: async () => {
+      const res = await fetch("/api/health-check");
+      if (!res.ok) return null;
+      return res.json();
+    },
+  });
+
+  const keyPool = healthData?.keyPool;
   const models = modelsData?.models || [];
 
   // Weight adjustments
@@ -94,15 +104,20 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      {/* 1. API Key Status & Instructions */}
+      {/* 1. API Key Status & 3-Key Rotation Pool */}
       <div className="rounded-[4px] border border-line bg-surface p-5 space-y-4">
         <div className="flex items-center justify-between border-b border-line pb-3">
-          <h3 className="text-sm font-medium text-text">NVIDIA API credentials</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-medium text-text">NVIDIA API Key Pool & Rotation</h3>
+            <span className="text-[11px] font-mono px-2 py-0.5 rounded-[4px] bg-amber-950/40 text-amber-400 border border-amber-800/40">
+              {keyPool?.totalKeys || 1} Active Key{(keyPool?.totalKeys || 1) > 1 ? "s" : ""}
+            </span>
+          </div>
           <div>
-            {apiKeyStatus.valid ? (
+            {keyPool?.totalKeys > 0 ? (
               <span className="text-xs font-mono flex items-center gap-1.5 text-sig-ok">
                 <span>●</span>
-                <span className="font-sans text-[11px] text-text">Operational</span>
+                <span className="font-sans text-[11px] text-text">Round-robin rotation ready</span>
               </span>
             ) : (
               <span className="text-xs font-mono flex items-center gap-1.5 text-sig-fail">
@@ -113,19 +128,43 @@ export default function SettingsPage() {
           </div>
         </div>
 
+        {/* Active Keys Cards */}
+        {keyPool?.keys && keyPool.keys.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            {keyPool.keys.map((k) => (
+              <div
+                key={k.index}
+                className="p-2.5 rounded-[4px] bg-canvas border border-line flex items-center justify-between font-mono text-xs"
+              >
+                <div className="space-y-0.5">
+                  <div className="text-[10px] text-text-faint font-sans">Key #{k.keyNumber}</div>
+                  <div className="text-text-main font-semibold">{k.masked}</div>
+                </div>
+                <span className="text-[10px] text-emerald-400 bg-emerald-950/50 px-1.5 py-0.5 rounded-[3px] border border-emerald-800/40 font-sans">
+                  Active
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="text-xs text-text-muted space-y-2 leading-relaxed max-w-[68ch]">
           <p>
-            NIM Console communicates with NVIDIA's API server-side using the <code className="font-mono text-text">NVIDIA_API_KEY</code> environment variable.
+            To use multiple keys in rotation (up to 3x concurrency and automatic rate-limit failover), configure them in your <code className="font-mono text-text">.env.local</code> file:
           </p>
-          <div className="p-3 bg-canvas rounded-[4px] border border-line font-mono text-[11px] text-text select-text">
-            # In your .env.local file:
-            <br />
-            NVIDIA_API_KEY=nvapi-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-            <br />
-            NVIDIA_JUDGE_MODEL=openai/gpt-oss-20b
+          <div className="p-3 bg-canvas rounded-[4px] border border-line font-mono text-[11px] text-text select-text whitespace-pre-wrap">
+# Primary key:
+NVIDIA_API_KEY=nvapi-key1
+
+# Additional keys for rotation:
+NVIDIA_API_KEY_2=nvapi-key2
+NVIDIA_API_KEY_3=nvapi-key3
+
+# Or comma-separated:
+# NVIDIA_API_KEYS=nvapi-key1,nvapi-key2,nvapi-key3
           </div>
           <p className="text-[11px]">
-            Need a key? Generate one at{" "}
+            Need another key? Generate one at{" "}
             <a
               href="https://build.nvidia.com"
               target="_blank"

@@ -1,0 +1,14 @@
+
+> benchmark@0.1.0 dev
+> next dev
+
+▲ Next.js 16.3.5 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://172.25.144.1:3000
+- Environments: .env.local
+✓ Ready in 1198ms
+✓ Running next.config.mjs took 57ms
+
+ GET /benchmark 200 in 2.1s (next.js: 974ms, application-code: 1093ms)
+ GET /api/models 200 in 496ms (next.js: 284ms, application-code: 212ms)
+ GET /api/models 200 in 23ms (next.js: 8ms, application-code: 15ms)
