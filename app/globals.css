@@ -1,0 +1,138 @@
+@import "tailwindcss";
+
+:root {
+  /* Chrome — neutral graphite, zero chroma */
+  --canvas:        #0E1013;  /* app background */
+  --surface:       #15181C;  /* panels, nav rail, table body */
+  --surface-raised:#1C2026;  /* row hover, popovers, active inputs */
+  --line:          #272C33;  /* hairline borders, table rules */
+  --line-strong:   #363C44;  /* dividers that separate major regions */
+  --text:          #E9ECEF;  /* primary text */
+  --text-muted:    #939BA4;  /* secondary text, labels, units */
+  --text-faint:    #626A73;  /* disabled, placeholder, timestamps */
+
+  /* Signal — reserved exclusively for measured values */
+  --sig-ok:        #3FB950;  /* operational / passed / top-quartile score */
+  --sig-warn:      #D9A441;  /* degraded / slow / mid score */
+  --sig-fail:      #E5534B;  /* down / errored / bottom score */
+  --sig-idle:      #6E7681;  /* unknown / not yet measured */
+  --sig-new:       #A371F7;  /* newly appeared in catalog */
+
+  /* Interaction — the one non-status color, for selection & focus only */
+  --focus:         #4C8EDA;
+  --focus-soft:    rgba(76, 142, 218, 0.15); /* 15% — selected row wash, focus ring halo */
+
+  /* Map old shadcn variables to instrument tokens */
+  --background:    var(--canvas);
+  --foreground:    var(--text);
+  --card:          var(--surface);
+  --card-foreground: var(--text);
+  --border:        var(--line);
+  --muted:         var(--text-muted);
+  --muted-foreground: var(--text-muted);
+  --accent:        var(--surface-raised);
+  --accent-foreground: var(--text);
+  --ring:          var(--focus);
+}
+
+[data-theme="light"] {
+  --canvas:        #FAFAFA;
+  --surface:       #FFFFFF;
+  --surface-raised:#F2F3F5;
+  --line:          #E2E5E9;
+  --line-strong:   #CFD4DA;
+  --text:          #171A1D;
+  --text-muted:    #5C646D;
+  --text-faint:    #8B939C;
+  --sig-ok:        #1F883D;
+  --sig-warn:      #9A6700;
+  --sig-fail:      #CF222E;
+  --sig-idle:      #6E7681;
+  --sig-new:       #8250DF;
+  --focus:         #2D6FCB;
+  --focus-soft:    rgba(45, 111, 203, 0.12);
+
+  --background:    var(--canvas);
+  --foreground:    var(--text);
+  --card:          var(--surface);
+  --card-foreground: var(--text);
+  --border:        var(--line);
+  --muted:         var(--text-muted);
+  --muted-foreground: var(--text-muted);
+  --accent:        var(--surface-raised);
+  --accent-foreground: var(--text);
+  --ring:          var(--focus);
+}
+
+@theme {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-text-main: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-faint: var(--text-faint);
+
+  --color-sig-ok: var(--sig-ok);
+  --color-sig-warn: var(--sig-warn);
+  --color-sig-fail: var(--sig-fail);
+  --color-sig-idle: var(--sig-idle);
+  --color-sig-new: var(--sig-new);
+
+  --color-focus: var(--focus);
+  --color-focus-soft: var(--focus-soft);
+
+  --font-sans: var(--font-plex-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+html, body {
+  background-color: var(--canvas);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Tabular numerals for data alignment */
+.tabular-nums, table, code, pre {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Monospace font exclusively for model IDs, code, numbers */
+code, pre, kbd, samp, .font-mono {
+  font-family: var(--font-mono);
+}
+
+/* Reduced motion handling */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Custom hairline scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+}
