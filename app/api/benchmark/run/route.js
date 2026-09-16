@@ -37,6 +37,7 @@ export async function POST(request) {
     timeBudgetMs = 45_000,
     concurrency = 4,
     maxTokens = 128,
+    timeoutMs = 15_000,
   } = body;
 
   if (!Array.isArray(modelIds) || modelIds.length === 0) {
@@ -54,6 +55,7 @@ export async function POST(request) {
       timeBudgetMs,
       concurrency,
       maxTokens,
+      timeoutMs,
     });
 
     return NextResponse.json({

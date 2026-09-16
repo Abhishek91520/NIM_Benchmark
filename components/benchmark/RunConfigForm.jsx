@@ -1,7 +1,17 @@
 "use client";
 
 import { useState, useMemo, useEffect, useRef } from "react";
-import { Search, ChevronDown, ChevronUp, Zap, Sparkles, CheckCircle2 } from "lucide-react";
+import {
+  Search,
+  ChevronDown,
+  ChevronUp,
+  Zap,
+  CheckCircle2,
+  XCircle,
+  HelpCircle,
+  SlidersHorizontal,
+  ArrowDownUp,
+} from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { DEFAULT_PROMPT_SUITE } from "@/lib/benchmark/default-suite";
 import { storage } from "@/lib/storage";
@@ -16,13 +26,19 @@ export default function RunConfigForm({
   const hasInitializedRef = useRef(false);
 
   const [search, setSearch] = useState("");
+  const [modelHealthFilter, setModelHealthFilter] = useState("all"); // 'all' | 'working' | 'untested' | 'failed'
+  const [sortOrder, setSortOrder] = useState("working-first"); // 'working-first' | 'name-asc' | 'throughput' | 'latency'
   const [suiteId, setSuiteId] = useState("default");
   const [customSuites, setCustomSuites] = useState([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [healthMap, setHealthMap] = useState({});
 
-  // Advanced settings
+  // Configurable execution parameters (all user-tunable)
+  const [concurrency, setConcurrency] = useState(4);
+  const [maxTokens, setMaxTokens] = useState(128);
+  const [perRequestTimeoutSec, setPerRequestTimeoutSec] = useState(15);
   const [timeBudgetSeconds, setTimeBudgetSeconds] = useState(45);
-  const [judgeScoringEnabled, setJudgeScoringEnabled] = useState(false); // Default to false for blazing fast runs
+  const [judgeScoringEnabled, setJudgeScoringEnabled] = useState(false);
 
   // Query key pool status to display active rotating keys
   const { data: healthData } = useQuery({
@@ -46,30 +62,78 @@ export default function RunConfigForm({
     setIsMounted(true);
   }, []);
 
+  // Dynamically load health history from past benchmark runs in storage
   useEffect(() => {
-    async function loadSuites() {
-      const items = await storage.list("prompts:suite:");
-      if (items && items.length > 0) {
-        setCustomSuites(items.map((i) => i.value));
+    async function loadData() {
+      // 1. Custom prompt suites
+      const suiteItems = await storage.list("prompts:suite:");
+      if (suiteItems && suiteItems.length > 0) {
+        setCustomSuites(suiteItems.map((i) => i.value));
       }
+
+      // 2. Read past runs dynamically to derive live verified model health
+      const runItems = await storage.list("benchmark:run:");
+      const map = {};
+
+      for (const item of (runItems || [])) {
+        const run = item.value;
+        if (run?.results && Array.isArray(run.results)) {
+          for (const r of run.results) {
+            if (!map[r.modelId]) {
+              map[r.modelId] = {
+                status: r.success ? "operational" : "failed",
+                tokensPerSec: r.tokensPerSec || 0,
+                latencyMs: r.totalLatencyMs || 0,
+                errorReason: !r.success ? (r.judgeReasoning || r.errorCode || "Failed") : null,
+              };
+            } else if (r.success && map[r.modelId].status !== "operational") {
+              map[r.modelId] = {
+                status: "operational",
+                tokensPerSec: r.tokensPerSec || map[r.modelId].tokensPerSec || 0,
+                latencyMs: r.totalLatencyMs || map[r.modelId].latencyMs || 0,
+                errorReason: null,
+              };
+            }
+          }
+        }
+      }
+      setHealthMap(map);
     }
-    loadSuites();
+    loadData();
   }, []);
 
+  // Dynamic helper to get health of any model from live test history
+  const getModelStatus = (modelId) => {
+    if (healthMap[modelId]) return healthMap[modelId];
+    return { status: "untested", tokensPerSec: 0, latencyMs: 0, errorReason: null };
+  };
+
+  // Pre-select models on initial load
   useEffect(() => {
     if (!hasInitializedRef.current && availableModels.length > 0) {
       if (preselectedModelIds.length > 0) {
         setSelectedModels(preselectedModelIds);
       } else {
-        const defaults = availableModels
-          .filter((m) => (m.category || "chat") === "chat")
+        // If we have working models from past runs, prioritize them
+        const working = availableModels
+          .filter((m) => getModelStatus(m.id).status === "operational")
           .slice(0, 4)
           .map((m) => m.id);
-        setSelectedModels(defaults);
+
+        if (working.length > 0) {
+          setSelectedModels(working);
+        } else {
+          // Otherwise pick the first 4 chat models that haven't failed
+          const defaults = availableModels
+            .filter((m) => (m.category || "chat") === "chat" && getModelStatus(m.id).status !== "failed")
+            .slice(0, 4)
+            .map((m) => m.id);
+          setSelectedModels(defaults);
+        }
       }
       hasInitializedRef.current = true;
     }
-  }, [availableModels, preselectedModelIds]);
+  }, [availableModels, preselectedModelIds, healthMap]);
 
   const activeSuite = useMemo(() => {
     if (suiteId === "default") return DEFAULT_PROMPT_SUITE;
@@ -77,22 +141,82 @@ export default function RunConfigForm({
     return found || DEFAULT_PROMPT_SUITE;
   }, [suiteId, customSuites]);
 
-  // Sync selected prompt IDs when active suite changes
-  useEffect(() => {
-    if (activeSuite?.prompts) {
-      setSelectedPromptIds([activeSuite.prompts[0].id]);
-    }
-  }, [suiteId]);
+  // Counts of models by health tier
+  const modelCounts = useMemo(() => {
+    let working = 0;
+    let failed = 0;
+    let untested = 0;
 
-  const filteredModels = useMemo(() => {
-    return availableModels.filter((m) => {
+    for (const m of availableModels) {
+      const st = getModelStatus(m.id).status;
+      if (st === "operational") working++;
+      else if (st === "failed") failed++;
+      else untested++;
+    }
+
+    return { working, failed, untested, total: availableModels.length };
+  }, [availableModels, healthMap]);
+
+  // Configurable sorting and filtering
+  const sortedAndFilteredModels = useMemo(() => {
+    const list = availableModels.filter((m) => {
       if (search) {
         const q = search.toLowerCase();
-        return m.id.toLowerCase().includes(q) || (m.owned_by || "").toLowerCase().includes(q);
+        if (!m.id.toLowerCase().includes(q) && !(m.owned_by || "").toLowerCase().includes(q)) {
+          return false;
+        }
       }
+
+      const st = getModelStatus(m.id).status;
+      if (modelHealthFilter === "working" && st !== "operational") return false;
+      if (modelHealthFilter === "untested" && st !== "untested") return false;
+      if (modelHealthFilter === "failed" && st !== "failed") return false;
+
       return true;
     });
-  }, [availableModels, search]);
+
+    return list.sort((a, b) => {
+      const aInfo = getModelStatus(a.id);
+      const bInfo = getModelStatus(b.id);
+
+      // Strategy 1: Working on top, failures at bottom
+      if (sortOrder === "working-first") {
+        const tierOrder = { operational: 1, untested: 2, failed: 3 };
+        const aTier = tierOrder[aInfo.status] || 2;
+        const bTier = tierOrder[bInfo.status] || 2;
+
+        if (aTier !== bTier) {
+          return aTier - bTier;
+        }
+
+        if (aInfo.status === "operational" && bInfo.status === "operational") {
+          if (bInfo.tokensPerSec !== aInfo.tokensPerSec) {
+            return (bInfo.tokensPerSec || 0) - (aInfo.tokensPerSec || 0);
+          }
+        }
+        return a.id.localeCompare(b.id);
+      }
+
+      // Strategy 2: Alphabetical
+      if (sortOrder === "name-asc") {
+        return a.id.localeCompare(b.id);
+      }
+
+      // Strategy 3: Throughput (tok/s)
+      if (sortOrder === "throughput") {
+        return (bInfo.tokensPerSec || 0) - (aInfo.tokensPerSec || 0);
+      }
+
+      // Strategy 4: Latency (fastest first)
+      if (sortOrder === "latency") {
+        const aLat = aInfo.latencyMs || 99999;
+        const bLat = bInfo.latencyMs || 99999;
+        return aLat - bLat;
+      }
+
+      return a.id.localeCompare(b.id);
+    });
+  }, [availableModels, search, healthMap, modelHealthFilter, sortOrder]);
 
   const toggleModel = (id) => {
     if (selectedModels.includes(id)) {
@@ -102,15 +226,21 @@ export default function RunConfigForm({
     }
   };
 
-  const selectAll = () => {
-    setSelectedModels(filteredModels.map((m) => m.id));
+  const selectAllWorking = () => {
+    const workingIds = availableModels
+      .filter((m) => getModelStatus(m.id).status === "operational")
+      .map((m) => m.id);
+    setSelectedModels(workingIds);
+  };
+
+  const selectAllVisible = () => {
+    setSelectedModels(sortedAndFilteredModels.map((m) => m.id));
   };
 
   const deselectAll = () => {
     setSelectedModels([]);
   };
 
-  // Selected prompts list derived from active suite & user selection
   const selectedPrompts = useMemo(() => {
     const list = (activeSuite.prompts || []).filter((p) => selectedPromptIds.includes(p.id));
     if (list.length === 0 && (activeSuite.prompts || []).length > 0) {
@@ -119,20 +249,18 @@ export default function RunConfigForm({
     return list;
   }, [activeSuite, selectedPromptIds]);
 
-  // Set count between 1 and 8
   const handleSetPromptCount = (count) => {
     const clamped = Math.max(1, Math.min(count, Math.min(8, activeSuite.prompts?.length || 8)));
     const newIds = (activeSuite.prompts || []).slice(0, clamped).map((p) => p.id);
     setSelectedPromptIds(newIds);
   };
 
-  // Toggle individual prompt in/out of selection (must keep at least 1, max 8)
   const handleTogglePrompt = (id) => {
     if (selectedPromptIds.includes(id)) {
-      if (selectedPromptIds.length <= 1) return; // Keep at least 1 prompt
+      if (selectedPromptIds.length <= 1) return;
       setSelectedPromptIds(selectedPromptIds.filter((pId) => pId !== id));
     } else {
-      if (selectedPromptIds.length >= 8) return; // Max 8 prompts
+      if (selectedPromptIds.length >= 8) return;
       setSelectedPromptIds([...selectedPromptIds, id]);
     }
   };
@@ -140,11 +268,15 @@ export default function RunConfigForm({
   const handleSpeedStatusPreset = () => {
     setSelectedPromptIds([activeSuite.prompts[0]?.id || "prompt-1-reasoning"]);
     setJudgeScoringEnabled(false);
+    setMaxTokens(128);
+    setConcurrency(4);
+    setPerRequestTimeoutSec(15);
   };
 
   const handleFullSuitePreset = () => {
     setSelectedPromptIds((activeSuite.prompts || []).slice(0, 8).map((p) => p.id));
     setJudgeScoringEnabled(true);
+    setMaxTokens(512);
   };
 
   const totalPairs = selectedModels.length * selectedPrompts.length;
@@ -161,8 +293,9 @@ export default function RunConfigForm({
       },
       judgeScoring: judgeScoringEnabled,
       timeBudgetMs: timeBudgetSeconds * 1000,
-      concurrency: 4,
-      maxTokens: judgeScoringEnabled ? 512 : 128,
+      concurrency: Number(concurrency) || 4,
+      maxTokens: Number(maxTokens) || 128,
+      timeoutMs: Number(perRequestTimeoutSec) * 1000 || 15_000,
     });
   };
 
@@ -205,57 +338,148 @@ export default function RunConfigForm({
         </div>
       </div>
 
-      {/* Step 1: Select Models Panel */}
+      {/* Step 1: Select Models Panel with Configurable Ordering & Dynamic Health */}
       <div className="rounded-[4px] border border-line bg-surface p-4 space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-line pb-2.5">
           <div>
             <h3 className="text-xs font-semibold text-text font-sans" suppressHydrationWarning>
-              Candidate models ({isMounted ? selectedModels.length : 0} selected)
+              Select candidate models ({isMounted ? selectedModels.length : 0} selected)
             </h3>
             <p className="text-[11px] text-text-muted mt-0.5 max-w-[68ch]">
-              Select models to benchmark across test prompts.
+              Configure model ordering, filter by health status, and select candidate models.
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          {/* Quick Selection Actions */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {modelCounts.working > 0 && (
+              <button
+                type="button"
+                onClick={selectAllWorking}
+                className="text-[11px] font-medium text-emerald-400 bg-emerald-950/40 hover:bg-emerald-900/60 border border-emerald-800/50 px-2.5 py-1 rounded-[4px] transition-colors flex items-center gap-1"
+                title="Select all verified working models"
+              >
+                <CheckCircle2 className="h-3 w-3" />
+                <span>Select all working ({modelCounts.working})</span>
+              </button>
+            )}
             <button
               type="button"
-              onClick={selectAll}
-              className="text-[11px] text-text-muted hover:text-text px-2 py-0.5 rounded-[4px] hover:bg-surface-raised transition-colors"
+              onClick={selectAllVisible}
+              className="text-[11px] text-text-muted hover:text-text px-2 py-1 rounded-[4px] hover:bg-surface-raised transition-colors"
             >
               Select visible
             </button>
             <button
               type="button"
               onClick={deselectAll}
-              className="text-[11px] text-text-muted hover:text-text px-2 py-0.5 rounded-[4px] hover:bg-surface-raised transition-colors"
+              className="text-[11px] text-text-muted hover:text-text px-2 py-1 rounded-[4px] hover:bg-surface-raised transition-colors"
             >
               Clear
             </button>
           </div>
         </div>
 
-        {/* Search */}
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-text-faint" />
-          <input
-            type="text"
-            placeholder="Filter models…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full h-8 pl-8 pr-3 bg-canvas border border-line rounded-[6px] text-xs text-text placeholder:text-text-faint focus:outline-none focus:border-focus font-sans"
-          />
+        {/* Ordering Selector, Health Filter Chips & Search Bar */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2 pt-0.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {/* Health Filter Chips */}
+            <button
+              type="button"
+              onClick={() => setModelHealthFilter("all")}
+              className={`h-6 px-2 rounded-[4px] text-[11px] font-mono transition ${
+                modelHealthFilter === "all"
+                  ? "bg-line-strong text-text-main font-semibold"
+                  : "text-text-muted hover:text-text-main"
+              }`}
+            >
+              All ({modelCounts.total})
+            </button>
+            {modelCounts.working > 0 && (
+              <button
+                type="button"
+                onClick={() => setModelHealthFilter("working")}
+                className={`h-6 px-2 rounded-[4px] text-[11px] font-mono flex items-center gap-1 transition ${
+                  modelHealthFilter === "working"
+                    ? "bg-emerald-950/60 text-emerald-400 border border-emerald-800/50 font-semibold"
+                    : "text-text-muted hover:text-emerald-400"
+                }`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                <span>Working ({modelCounts.working})</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setModelHealthFilter("untested")}
+              className={`h-6 px-2 rounded-[4px] text-[11px] font-mono flex items-center gap-1 transition ${
+                modelHealthFilter === "untested"
+                  ? "bg-surface-raised text-text-main border border-line font-semibold"
+                  : "text-text-muted hover:text-text-main"
+              }`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-text-faint" />
+              <span>Untested ({modelCounts.untested})</span>
+            </button>
+            {modelCounts.failed > 0 && (
+              <button
+                type="button"
+                onClick={() => setModelHealthFilter("failed")}
+                className={`h-6 px-2 rounded-[4px] text-[11px] font-mono flex items-center gap-1 transition ${
+                  modelHealthFilter === "failed"
+                    ? "bg-rose-950/60 text-rose-400 border border-rose-800/50 font-semibold"
+                    : "text-text-muted hover:text-rose-400"
+                }`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                <span>Failed ({modelCounts.failed})</span>
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Sort Order Selector */}
+            <div className="flex items-center gap-1.5 text-xs text-text-muted shrink-0">
+              <ArrowDownUp className="h-3.5 w-3.5 text-text-faint" />
+              <select
+                value={sortOrder}
+                onChange={(e) => setSortOrder(e.target.value)}
+                className="h-7 px-2 bg-canvas border border-line rounded-[4px] text-[11px] font-sans text-text focus:outline-none focus:border-focus"
+              >
+                <option value="working-first">Working on Top, Failed at Bottom</option>
+                <option value="throughput">Throughput (Highest tok/s)</option>
+                <option value="name-asc">Alphabetical (A–Z)</option>
+                <option value="latency">Latency (Lowest first)</option>
+              </select>
+            </div>
+
+            {/* Search Input */}
+            <div className="relative w-full sm:w-52">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-text-faint" />
+              <input
+                type="text"
+                placeholder="Search models…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full h-7 pl-8 pr-3 bg-canvas border border-line rounded-[4px] text-xs text-text placeholder:text-text-faint focus:outline-none focus:border-focus"
+              />
+            </div>
+          </div>
         </div>
 
-        {/* Model rows */}
-        <div className="max-h-60 overflow-y-auto space-y-0.5 border border-line rounded-[4px] p-1 bg-canvas">
+        {/* Model Rows */}
+        <div className="max-h-72 overflow-y-auto space-y-0.5 border border-line rounded-[4px] p-1 bg-canvas">
           {!isMounted ? (
             <div className="p-4 text-center text-xs text-text-faint">Loading models…</div>
-          ) : filteredModels.length === 0 ? (
-            <div className="p-4 text-center text-xs text-text-faint">No models available</div>
+          ) : sortedAndFilteredModels.length === 0 ? (
+            <div className="p-4 text-center text-xs text-text-faint">No models match current filter</div>
           ) : (
-            filteredModels.map((model) => {
+            sortedAndFilteredModels.map((model) => {
               const isChecked = selectedModels.includes(model.id);
+              const info = getModelStatus(model.id);
+              const isWorking = info.status === "operational";
+              const isFailed = info.status === "failed";
+
               return (
                 <div
                   key={model.id}
@@ -263,6 +487,8 @@ export default function RunConfigForm({
                   className={`flex items-center justify-between p-2 rounded-[4px] cursor-pointer text-xs transition-colors duration-100 ${
                     isChecked
                       ? "bg-surface-raised text-text font-medium"
+                      : isFailed
+                      ? "hover:bg-surface-raised/40 text-text-faint opacity-65"
                       : "hover:bg-surface-raised/50 text-text-muted"
                   }`}
                 >
@@ -271,13 +497,38 @@ export default function RunConfigForm({
                       type="checkbox"
                       checked={isChecked}
                       onChange={() => {}}
-                      className="h-3.5 w-3.5 rounded-[3px] accent-focus cursor-pointer"
+                      className="h-3.5 w-3.5 rounded-[3px] accent-focus cursor-pointer shrink-0"
                     />
-                    <span className="font-mono text-xs truncate">{model.id}</span>
+                    <span className="font-mono text-xs truncate max-w-sm sm:max-w-md" title={model.id}>
+                      {model.id}
+                    </span>
                   </div>
-                  <span className="text-[11px] font-mono text-text-faint shrink-0 pl-2">
-                    {model.owned_by}
-                  </span>
+
+                  <div className="flex items-center gap-2 shrink-0 pl-2">
+                    {/* Status badge */}
+                    {isWorking ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-mono text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 px-1.5 py-0.5 rounded-[3px]">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                        <span>Working {info.tokensPerSec > 0 ? `• ${info.tokensPerSec} tok/s` : ""}</span>
+                      </span>
+                    ) : isFailed ? (
+                      <span
+                        className="inline-flex items-center gap-1 text-[10px] font-mono text-rose-400 bg-rose-950/40 border border-rose-800/40 px-1.5 py-0.5 rounded-[3px] max-w-[150px] truncate"
+                        title={info.errorReason || "Failed"}
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-400 shrink-0" />
+                        <span className="truncate">{info.errorReason?.slice(0, 18) || "Failed"}</span>
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-mono text-text-faint bg-surface border border-line px-1.5 py-0.5 rounded-[3px]">
+                        Untested
+                      </span>
+                    )}
+
+                    <span className="text-[11px] font-mono text-text-faint w-20 text-right truncate">
+                      {model.owned_by}
+                    </span>
+                  </div>
                 </div>
               );
             })
@@ -285,7 +536,7 @@ export default function RunConfigForm({
         </div>
       </div>
 
-      {/* Step 2: Prompt Suite & Prompts Count Selection (Option between 1 to 8 prompts/pairs) */}
+      {/* Step 2: Prompt Suite & Prompts Count Selection */}
       <div className="rounded-[4px] border border-line bg-surface p-4 space-y-3">
         <div className="border-b border-line pb-2">
           <h3 className="text-xs font-semibold text-text font-sans">Prompt suite</h3>
@@ -350,7 +601,7 @@ export default function RunConfigForm({
                 </span>
               </div>
               <p className="text-[11px] text-text-muted mt-0.5">
-                Choose between 1 to 8 prompts to run. Select a quick preset or toggle individual test cases below.
+                Choose test prompts. Select a preset count or toggle individual cases below.
               </p>
             </div>
 
@@ -378,7 +629,7 @@ export default function RunConfigForm({
             </div>
           </div>
 
-          {/* Prompt list with individual checkboxes */}
+          {/* Prompt list */}
           <div className="max-h-56 overflow-y-auto space-y-1 border border-line rounded-[4px] p-1.5 bg-canvas">
             {(activeSuite.prompts || []).slice(0, 8).map((p, idx) => {
               const isChecked = selectedPromptIds.includes(p.id);
@@ -419,43 +670,102 @@ export default function RunConfigForm({
         </div>
       </div>
 
-      {/* Advanced Settings Collapsible */}
+      {/* Advanced Settings Collapsible: All parameters user-configurable */}
       <div className="rounded-[4px] border border-line bg-surface p-3.5">
         <button
           type="button"
           onClick={() => setShowAdvanced(!showAdvanced)}
           className="w-full flex items-center justify-between text-xs text-text-muted hover:text-text transition-colors"
         >
-          <span>Advanced settings</span>
+          <div className="flex items-center gap-1.5">
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            <span>Advanced engine settings (concurrency, token budget, timeouts)</span>
+          </div>
           {showAdvanced ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
         </button>
 
         {showAdvanced && (
-          <div className="mt-3 pt-3 border-t border-line grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          <div className="mt-3 pt-3 border-t border-line grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            {/* Concurrency Setting */}
             <div className="space-y-1">
-              <span className="text-text-muted">Batch time budget</span>
-              <div className="flex items-center gap-2">
+              <span className="text-text-muted">Concurrency</span>
+              <div className="flex items-center gap-1.5">
                 <input
                   type="number"
-                  min="15"
-                  max="55"
-                  value={timeBudgetSeconds}
-                  onChange={(e) => setTimeBudgetSeconds(parseInt(e.target.value, 10) || 38)}
-                  className="w-16 h-6 px-1.5 bg-canvas border border-line rounded-[4px] font-mono text-xs tabular-nums text-right text-text"
+                  min="1"
+                  max="10"
+                  value={concurrency}
+                  onChange={(e) => setConcurrency(Math.max(1, Math.min(10, parseInt(e.target.value, 10) || 4)))}
+                  className="w-14 h-7 px-2 bg-canvas border border-line rounded-[4px] font-mono text-xs tabular-nums text-right text-text"
                 />
-                <span className="text-[11px] text-text-faint">seconds per batch</span>
+                <span className="text-[11px] text-text-faint">workers</span>
               </div>
             </div>
 
-            <label className="flex items-center justify-between cursor-pointer pt-2">
-              <span className="text-text">Automated judge grading</span>
-              <input
-                type="checkbox"
-                checked={judgeScoringEnabled}
-                onChange={(e) => setJudgeScoringEnabled(e.target.checked)}
-                className="h-3.5 w-3.5 rounded-[3px] accent-focus cursor-pointer"
-              />
-            </label>
+            {/* Max Output Tokens Setting */}
+            <div className="space-y-1">
+              <span className="text-text-muted">Max output tokens</span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min="32"
+                  max="2048"
+                  step="32"
+                  value={maxTokens}
+                  onChange={(e) => setMaxTokens(Math.max(32, Math.min(2048, parseInt(e.target.value, 10) || 128)))}
+                  className="w-16 h-7 px-2 bg-canvas border border-line rounded-[4px] font-mono text-xs tabular-nums text-right text-text"
+                />
+                <span className="text-[11px] text-text-faint">tokens</span>
+              </div>
+            </div>
+
+            {/* Per-Request Timeout Setting */}
+            <div className="space-y-1">
+              <span className="text-text-muted">Model timeout</span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min="5"
+                  max="60"
+                  value={perRequestTimeoutSec}
+                  onChange={(e) => setPerRequestTimeoutSec(Math.max(5, Math.min(60, parseInt(e.target.value, 10) || 15)))}
+                  className="w-14 h-7 px-2 bg-canvas border border-line rounded-[4px] font-mono text-xs tabular-nums text-right text-text"
+                />
+                <span className="text-[11px] text-text-faint">sec / model</span>
+              </div>
+            </div>
+
+            {/* Batch Time Budget */}
+            <div className="space-y-1">
+              <span className="text-text-muted">Batch timeout</span>
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min="15"
+                  max="60"
+                  value={timeBudgetSeconds}
+                  onChange={(e) => setTimeBudgetSeconds(Math.max(15, Math.min(60, parseInt(e.target.value, 10) || 45)))}
+                  className="w-14 h-7 px-2 bg-canvas border border-line rounded-[4px] font-mono text-xs tabular-nums text-right text-text"
+                />
+                <span className="text-[11px] text-text-faint">sec batch</span>
+              </div>
+            </div>
+
+            {/* Automated Judge Grading Toggle */}
+            <div className="sm:col-span-2 md:col-span-4 pt-1">
+              <label className="flex items-center justify-between cursor-pointer p-2 rounded-[4px] bg-canvas border border-line">
+                <div>
+                  <span className="text-text block font-medium">Automated judge grading</span>
+                  <span className="text-[11px] text-text-faint block">Calls secondary model for qualitative rubric scoring (disabling speeds up runs)</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={judgeScoringEnabled}
+                  onChange={(e) => setJudgeScoringEnabled(e.target.checked)}
+                  className="h-4 w-4 rounded-[3px] accent-focus cursor-pointer"
+                />
+              </label>
+            </div>
           </div>
         )}
       </div>

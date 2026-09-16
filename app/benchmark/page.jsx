@@ -40,6 +40,7 @@ function BenchmarkConfigContent() {
       timeBudgetMs: config.timeBudgetMs || 45_000,
       concurrency: config.concurrency || 4,
       maxTokens: config.maxTokens || 128,
+      timeoutMs: config.timeoutMs || 15_000,
     };
 
     await storage.set(`benchmark:run:${runId}`, initialRun);

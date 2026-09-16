@@ -88,6 +88,7 @@ export default function BenchmarkRunPage({ params }) {
             timeBudgetMs: initialRun.timeBudgetMs || 45_000,
             concurrency: initialRun.concurrency || 4,
             maxTokens: initialRun.maxTokens || 128,
+            timeoutMs: initialRun.timeoutMs || 15_000,
           }),
         });
 

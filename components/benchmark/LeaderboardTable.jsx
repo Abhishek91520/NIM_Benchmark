@@ -101,11 +101,19 @@ export default function LeaderboardTable({
 
   const sortedLeaderboard = useMemo(() => {
     return [...filteredLeaderboard].sort((a, b) => {
+      const aWorking = a.isWorking || a.successfulCount > 0;
+      const bWorking = b.isWorking || b.successfulCount > 0;
+
+      // Working models ALWAYS stay on top, failed models stay at the bottom!
+      if (aWorking !== bWorking) {
+        return aWorking ? -1 : 1;
+      }
+
       let aVal = a[sortField] ?? 0;
       let bVal = b[sortField] ?? 0;
       if (sortField === "status") {
-        aVal = a.isWorking ? 1 : 0;
-        bVal = b.isWorking ? 1 : 0;
+        aVal = aWorking ? 1 : 0;
+        bVal = bWorking ? 1 : 0;
       }
       return sortDirection === "asc" ? aVal - bVal : bVal - aVal;
     });
